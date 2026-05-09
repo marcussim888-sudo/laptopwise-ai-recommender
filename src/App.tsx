@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import './App.css'
-import GlassIcons from './GlassIcons.jsx'
+import GlassIcons from './GlassIcons'
 
 type UseCase = 'study' | 'coding' | 'design' | 'editing' | 'gaming'
 type BudgetTier = 'budget' | 'value' | 'performance' | 'premium'
@@ -22,6 +22,25 @@ type RecommendationResult = {
   simpleExplanation: string
   beginnerTip: string
   laptops: Laptop[]
+}
+type BackendRankingItem = {
+  laptop_model?: string
+  name?: string
+  budget_tier?: string
+  specs?: string
+  avg_price?: number | string
+  score?: number
+  reason?: string
+}
+
+type BackendRecommendationResponse = {
+  mainPick?: string
+  recommendedSpecs?: string
+  expectedBudget?: string
+  simpleExplanation?: string
+  beginnerTip?: string
+  ranking?: BackendRankingItem[]
+  laptops?: Laptop[]
 }
 
 const useCases = [
@@ -881,6 +900,58 @@ const mockRecommendations: Record<UseCase, Record<BudgetTier, RecommendationResu
   },
 }
 
+const API_URL = 'http://127.0.0.1:8000/api/recommend'
+
+function extractSpec(specs: string, type: 'cpu' | 'ram' | 'storage' | 'gpu') {
+  if (!specs) return 'See specs'
+
+  const cpuMatch = specs.match(/(Intel\s?i[3579]|Ryzen\s?[3579]|Apple\s?M\d|Intel\s?Ultra\s?\d)/i)
+  const ramMatch = specs.match(/(\d+\s?GB\s?RAM)/i)
+  const storageMatch = specs.match(/(\d+\s?GB\s?SSD|\d+\s?TB\s?SSD)/i)
+  const gpuMatch = specs.match(/(RTX\s?\d{4}|GTX\s?\d{4}|Integrated Graphics|Integrated|Apple GPU)/i)
+
+  if (type === 'cpu') return cpuMatch?.[0] || 'See specs'
+  if (type === 'ram') return ramMatch?.[0] || 'See specs'
+  if (type === 'storage') return storageMatch?.[0] || 'See specs'
+  if (type === 'gpu') return gpuMatch?.[0] || 'See specs'
+
+  return 'See specs'
+}
+
+function normalizeBackendResponse(
+  data: BackendRecommendationResponse,
+  fallback: RecommendationResult
+): RecommendationResult {
+  const backendRanking = data.ranking || []
+
+  const normalizedLaptops: Laptop[] =
+    data.laptops ||
+    backendRanking.map((item) => {
+      const specs = item.specs || ''
+
+      return {
+        name: item.laptop_model || item.name || 'Unknown Laptop',
+        priceRange: item.avg_price ? `Around RM ${item.avg_price}` : fallback.expectedBudget,
+        cpu: extractSpec(specs, 'cpu'),
+        ram: extractSpec(specs, 'ram'),
+        storage: extractSpec(specs, 'storage'),
+        gpu: extractSpec(specs, 'gpu'),
+        reason:
+          item.reason ||
+          `Recommended based on specs, budget tier, and score${item.score ? ` (${item.score})` : ''}.`,
+      }
+    })
+
+  return {
+    mainPick: data.mainPick || fallback.mainPick,
+    recommendedSpecs: data.recommendedSpecs || fallback.recommendedSpecs,
+    expectedBudget: data.expectedBudget || fallback.expectedBudget,
+    simpleExplanation: data.simpleExplanation || fallback.simpleExplanation,
+    beginnerTip: data.beginnerTip || fallback.beginnerTip,
+    laptops: normalizedLaptops.length > 0 ? normalizedLaptops : fallback.laptops,
+  }
+}
+
 function App() {
   const [selectedUseCase, setSelectedUseCase] = useState<UseCase>('study')
   const [selectedBudget, setSelectedBudget] = useState<BudgetTier>('value')
@@ -900,31 +971,44 @@ function App() {
     onClick: () => setSelectedUseCase(item.id as UseCase),
   }))
 
-  function generateRecommendation() {
-    setLoading(true)
+async function generateRecommendation() {
+  setLoading(true)
 
-    setTimeout(() => {
-      const mockResult = mockRecommendations[selectedUseCase][selectedBudget]
-      setResult(mockResult)
-      setLoading(false)
-    }, 600)
+  const fallbackResult = mockRecommendations[selectedUseCase][selectedBudget]
 
-    /*
-      Backend version later:
+  try {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        useCase: selectedUseCase,
+        budgetTier: selectedBudget,
+      }),
+    })
 
-      const response = await fetch('http://localhost:8000/api/recommend', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          useCase: selectedUseCase,
-          budget: selectedBudget,
-        }),
-      })
+    if (!response.ok) {
+      throw new Error(`Backend error: ${response.status}`)
+    }
 
-      const data = await response.json()
-      setResult(data)
-    */
+    const data: BackendRecommendationResponse = await response.json()
+    const normalizedResult = normalizeBackendResponse(data, fallbackResult)
+
+    setResult(normalizedResult)
+  } catch (error) {
+    console.error(error)
+
+    // If backend is not running, frontend still works using mock data.
+    setResult({
+      ...fallbackResult,
+      beginnerTip:
+        'Backend is not connected yet, so this result is currently generated from frontend mock data.',
+    })
+  } finally {
+    setLoading(false)
   }
+}
 
   return (
     <main className="app">
